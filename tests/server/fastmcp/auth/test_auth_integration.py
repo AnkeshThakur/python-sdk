@@ -938,6 +938,92 @@ class TestAuthEndpoints:
         assert error_data["error_description"] == "grant_types must be authorization_code and refresh_token"
 
 
+class TestOAuth21InvalidClientErrors:
+    """Test OAuth 2.1 compliant invalid_client error handling."""
+
+    @pytest.mark.anyio
+    async def test_invalid_client_form_auth_returns_401(self, test_client: httpx.AsyncClient):
+        """Test that invalid client with form auth returns HTTP 401."""
+        response = await test_client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": "invalid_code",
+                "client_id": "nonexistent_client",
+                "client_secret": "some_secret",
+                "code_verifier": "test_verifier",
+                "redirect_uri": "https://client.example.com/callback",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert response.status_code == 401
+        error_data = response.json()
+        assert error_data["error"] == "invalid_client"
+        assert "Invalid client_id" in error_data["error_description"]
+        assert "WWW-Authenticate" in response.headers
+        assert response.headers["WWW-Authenticate"] == "Form"
+
+    @pytest.mark.anyio
+    async def test_invalid_client_public_client_returns_401_no_www_authenticate(
+        self, test_client: httpx.AsyncClient
+    ):
+        """Test that invalid public client returns HTTP 401 without WWW-Authenticate header."""
+        response = await test_client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": "invalid_code",
+                "client_id": "nonexistent_public_client",
+                "code_verifier": "test_verifier",
+                "redirect_uri": "https://client.example.com/callback",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert response.status_code == 401
+        error_data = response.json()
+        assert error_data["error"] == "invalid_client"
+        assert "Invalid client_id" in error_data["error_description"]
+        # Public clients should not have WWW-Authenticate header
+        assert "WWW-Authenticate" not in response.headers
+
+    @pytest.mark.anyio
+    async def test_other_token_errors_still_return_400(self, test_client: httpx.AsyncClient):
+        """Test that non-authentication errors still return HTTP 400."""
+        # Register a valid client first
+        client_metadata = {
+            "redirect_uris": ["https://client.example.com/callback"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "scope": "read write",
+        }
+
+        register_response = await test_client.post("/register", json=client_metadata)
+        assert register_response.status_code == 201
+        client_info = register_response.json()
+
+        # Test with invalid grant (should be 400, not 401)
+        response = await test_client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": "invalid_code_that_does_not_exist",
+                "client_id": client_info["client_id"],
+                "client_secret": client_info["client_secret"],
+                "code_verifier": "test_verifier",
+                "redirect_uri": "https://client.example.com/callback",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert response.status_code == 400  # Not 401
+        error_data = response.json()
+        assert error_data["error"] == "invalid_grant"
+        # Should not have WWW-Authenticate header for non-client-auth errors
+        assert "WWW-Authenticate" not in response.headers
+
+
 class TestAuthorizeEndpointErrors:
     """Test error handling in the OAuth authorization endpoint."""
 

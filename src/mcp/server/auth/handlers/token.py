@@ -9,7 +9,7 @@ from starlette.requests import Request
 
 from mcp.server.auth.errors import stringify_pydantic_error
 from mcp.server.auth.json_response import PydanticJSONResponse
-from mcp.server.auth.middleware.client_auth import AuthenticationError, ClientAuthenticator
+from mcp.server.auth.middleware.client_auth import AuthenticationError, ClientAuthenticator, ClientAuthMethod
 from mcp.server.auth.provider import OAuthAuthorizationServerProvider, TokenError, TokenErrorCode
 from mcp.shared.auth import OAuthToken
 
@@ -76,18 +76,35 @@ class TokenHandler:
     provider: OAuthAuthorizationServerProvider[Any, Any, Any]
     client_authenticator: ClientAuthenticator
 
-    def response(self, obj: TokenSuccessResponse | TokenErrorResponse):
+    def response(
+        self,
+        obj: TokenSuccessResponse | TokenErrorResponse,
+        auth_method: ClientAuthMethod | None = None
+    ):
         status_code = 200
+        headers = {
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        }
+
         if isinstance(obj, TokenErrorResponse):
-            status_code = 400
+            # OAuth 2.1 compliant error handling
+            if obj.error == "invalid_client":
+                # For invalid_client, use HTTP 401 and add WWW-Authenticate header
+                status_code = 401
+                if auth_method == ClientAuthMethod.BASIC:
+                    headers["WWW-Authenticate"] = 'Basic realm="OAuth Token Endpoint"'
+                elif auth_method == ClientAuthMethod.FORM:
+                    headers["WWW-Authenticate"] = 'Form'
+                # For NONE (public clients), no WWW-Authenticate header needed
+            else:
+                # All other token errors use HTTP 400 per OAuth 2.1
+                status_code = 400
 
         return PydanticJSONResponse(
             content=obj,
             status_code=status_code,
-            headers={
-                "Cache-Control": "no-store",
-                "Pragma": "no-cache",
-            },
+            headers=headers,
         )
 
     async def handle(self, request: Request):
@@ -104,15 +121,18 @@ class TokenHandler:
 
         try:
             client_info = await self.client_authenticator.authenticate(
+                request=request,
                 client_id=token_request.client_id,
                 client_secret=token_request.client_secret,
             )
         except AuthenticationError as e:
+            # OAuth 2.1 compliant: return invalid_client for authentication failures
             return self.response(
                 TokenErrorResponse(
-                    error="unauthorized_client",
+                    error="invalid_client",
                     error_description=e.message,
-                )
+                ),
+                auth_method=e.auth_method
             )
 
         if token_request.grant_type not in client_info.grant_types:

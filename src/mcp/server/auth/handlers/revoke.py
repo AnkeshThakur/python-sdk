@@ -54,7 +54,9 @@ class RevocationHandler:
         # Authenticate client
         try:
             client = await self.client_authenticator.authenticate(
-                revocation_request.client_id, revocation_request.client_secret
+                request=request,
+                client_id=revocation_request.client_id,
+                client_secret=revocation_request.client_secret,
             )
         except AuthenticationError as e:
             return PydanticJSONResponse(
